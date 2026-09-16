@@ -215,10 +215,12 @@ function Index() {
 
   const monthLabel = useMemo(() => {
     const [y, m] = month.split("-").map(Number) as [number, number];
-    return new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
+    const raw = new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
       month: "long",
       year: "numeric",
     });
+    // capitaliza só a primeira letra ("setembro de 2026" → "Setembro de 2026")
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
   }, [month]);
 
   const shiftMonth = (delta: number) => {
