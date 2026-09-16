@@ -128,7 +128,7 @@ function fmtDayKey(ts: number): string {
 }
 
 function fmtDayLabel(dayKey: string): string {
-  const [y, m, d] = dayKey.split("-").map(Number);
+  const [y, m, d] = dayKey.split("-").map(Number) as [number, number, number];
   const date = new Date(y, m - 1, d);
   const weekday = date.toLocaleDateString("pt-BR", { weekday: "long" });
   const day = date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
@@ -214,7 +214,7 @@ function Index() {
   );
 
   const monthLabel = useMemo(() => {
-    const [y, m] = month.split("-").map(Number);
+    const [y, m] = month.split("-").map(Number) as [number, number];
     return new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
       month: "long",
       year: "numeric",
@@ -222,7 +222,7 @@ function Index() {
   }, [month]);
 
   const shiftMonth = (delta: number) => {
-    const [y, m] = month.split("-").map(Number);
+    const [y, m] = month.split("-").map(Number) as [number, number];
     const d = new Date(y, m - 1 + delta, 1);
     setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   };
@@ -235,7 +235,7 @@ function Index() {
    */
   const exportPdf = useCallback(() => {
     const doc = new jsPDF();
-    const [y, m] = month.split("-").map(Number);
+    const [y, m] = month.split("-").map(Number) as [number, number];
     const monthName = new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
       month: "long",
       year: "numeric",
@@ -271,7 +271,7 @@ function Index() {
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
       // Destaque visual nas linhas de subtotal
       didParseCell: (data) => {
-        if (data.section === "body" && String(data.row.raw[1]).startsWith("Total do dia")) {
+        if (data.section === "body" && String((data.row.raw as string[])[1]).startsWith("Total do dia")) {
           data.cell.styles.fontStyle = "bold";
           data.cell.styles.fillColor = [255, 210, 63];
         }
