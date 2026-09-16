@@ -355,7 +355,7 @@ function Index() {
       {/* Totalizadores do mês */}
       <section className="mx-auto max-w-5xl px-5 pt-10 sm:px-8">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-2xl font-bold capitalize">{monthLabel}</h2>
+          <h2 className="text-2xl font-bold">{monthLabel}</h2>
           <div className="flex gap-2">
             <button
               onClick={() => shiftMonth(-1)}
