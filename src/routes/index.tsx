@@ -2,6 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
+import { lovable } from "@/integrations/lovable/index";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -10,13 +13,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Controle de ponto simples: bata o ponto com um clique, acompanhe registros por dia e feche o mês com totais em HH:MM e decimal. Exporte o relatório em PDF.",
+          "Controle de ponto simples: bata o ponto com um clique, registre pontos retroativos com observação e feche o mês com totais em HH:MM e decimal. Exporte em PDF.",
       },
       { property: "og:title", content: "PontoFácil — Controle de Ponto" },
       {
         property: "og:description",
         content:
-          "Bate o ponto, a gente conta as horas. Registros por dia, total do mês e relatório em PDF.",
+          "Bate o ponto, a gente conta as horas. Registros salvos na sua conta, ponto retroativo, observações e relatório em PDF.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -27,13 +30,14 @@ export const Route = createFileRoute("/")({
 
 /* ============================ Tipos ============================ */
 
-// Os 4 tipos de batida de ponto disponíveis no modal
 type PunchType = "entrada" | "saida_almoco" | "retorno_almoco" | "saida";
 
 interface PunchRecord {
-  id: string; // id único (para remoção)
-  timestamp: number; // data+hora exata do clique, em ms (epoch)
+  id: string;
+  timestamp: number; // data+hora do registro em ms (epoch)
   type: PunchType;
+  note: string | null;
+  retroactive: boolean;
 }
 
 const TYPE_META: Record<
@@ -46,68 +50,36 @@ const TYPE_META: Record<
   saida: { label: "Saída", emoji: "👋", dot: "bg-coral", chip: "bg-coral text-paper" },
 };
 
-const STORAGE_KEY = "pontofacil:records";
-
-/* ====================== Persistência (localStorage) ====================== */
-
-function loadRecords(): PunchRecord[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as PunchRecord[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecords(records: PunchRecord[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-}
-
 /* ====================== Lógica de cálculo de horas ====================== */
 /*
- * Como calculamos as horas de um dia:
- * 1) Ordenamos os registros do dia cronologicamente.
- * 2) Somamos os intervalos de trabalho:
- *    - Entrada → Saída Almoço  (manhã)
- *    - Retorno Almoço → Saída  (tarde)
- *    - Se não houver almoço: Entrada → Saída
- *    O algoritmo é genérico: um relógio "ligado" em Entrada/Retorno Almoço
- *    e "desligado" em Saída Almoço/Saída, acumulando o tempo ligado.
+ * Relógio "ligado" em Entrada/Retorno Almoço e "desligado" em
+ * Saída Almoço/Saída — somamos apenas o tempo ligado.
  */
-
 function minutesWorked(records: PunchRecord[]): number {
   const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
   let total = 0;
-  let clockOn: number | null = null; // timestamp de quando o trabalho começou
+  let clockOn: number | null = null;
 
   for (const r of sorted) {
     if (r.type === "entrada" || r.type === "retorno_almoco") {
-      if (clockOn === null) clockOn = r.timestamp; // liga o relógio
-    } else {
-      // saida_almoco ou saida: desliga o relógio e soma o intervalo
-      if (clockOn !== null) {
-        total += (r.timestamp - clockOn) / 60000;
-        clockOn = null;
-      }
+      if (clockOn === null) clockOn = r.timestamp;
+    } else if (clockOn !== null) {
+      total += (r.timestamp - clockOn) / 60000;
+      clockOn = null;
     }
   }
-  // Se o dia ainda está "em aberto" (bateu entrada mas não saída),
-  // conta até agora para dar feedback em tempo real.
+  // dia em aberto (entrada sem saída): conta até agora
   if (clockOn !== null) total += (Date.now() - clockOn) / 60000;
 
   return Math.max(0, Math.round(total));
 }
 
-// Converte minutos em "HH:MM" (horas podem passar de 24 — ex: 160:30)
 function toHHMM(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${h}:${String(m).padStart(2, "0")}`;
 }
 
-// Converte minutos em decimal com 2 casas (ex: 160.50)
 function toDecimal(minutes: number): string {
   return (minutes / 60).toFixed(2);
 }
@@ -135,62 +107,270 @@ function fmtDayLabel(dayKey: string): string {
   return `${weekday} · ${day}`;
 }
 
+// valores iniciais para os campos do formulário retroativo
+function todayInputValue(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/* ====================== Tela de login / cadastro ====================== */
+
+function AuthScreen() {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setMsg(null);
+    if (mode === "signup") {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: window.location.origin },
+      });
+      if (error) setError(error.message);
+      else if (!data.session) setMsg("Confira seu e-mail para confirmar a conta.");
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) setError("E-mail ou senha inválidos.");
+    }
+    setBusy(false);
+  };
+
+  const google = async () => {
+    setError(null);
+    const result = await lovable.auth.signInWithOAuth("google", {
+      redirect_uri: window.location.origin,
+    });
+    if (result.error) setError("Não foi possível entrar com o Google.");
+  };
+
+  return (
+    <div className="min-h-screen bg-paper text-ink">
+      <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-5 py-12">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="grid size-11 place-items-center rounded-2xl bg-ink text-xl font-bold text-lemon">
+            ⏱
+          </div>
+          <div>
+            <p className="text-lg leading-none font-bold tracking-tight">PontoFácil</p>
+            <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-ink/40">
+              seus pontos, na sua conta
+            </p>
+          </div>
+        </div>
+        <h1 className="text-4xl leading-[0.95] font-bold tracking-tight">
+          {mode === "login" ? "Entre para bater o ponto." : "Crie sua conta."}
+        </h1>
+        <p className="mt-3 text-sm font-medium text-ink/60">
+          Seus registros ficam salvos e sincronizados, com observações e ponto retroativo.
+        </p>
+
+        <form onSubmit={submit} className="mt-7 space-y-3">
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="seu@email.com"
+            className="w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-medium outline-none focus:shadow-punch-sm"
+          />
+          <input
+            type="password"
+            required
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="sua senha"
+            className="w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-medium outline-none focus:shadow-punch-sm"
+          />
+          {error && <p className="text-sm font-bold text-coral">{error}</p>}
+          {msg && <p className="text-sm font-bold text-ink/70">{msg}</p>}
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full cursor-pointer rounded-2xl bg-ink px-4 py-3 text-lg font-bold text-lemon shadow-punch transition active:translate-x-1 active:translate-y-1 disabled:opacity-50"
+          >
+            {mode === "login" ? "Entrar" : "Criar conta"}
+          </button>
+        </form>
+
+        <button
+          onClick={google}
+          className="mt-3 w-full cursor-pointer rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-bold shadow-punch-sm transition active:translate-x-1 active:translate-y-1"
+        >
+          Continuar com o Google
+        </button>
+
+        <button
+          onClick={() => {
+            setMode(mode === "login" ? "signup" : "login");
+            setError(null);
+            setMsg(null);
+          }}
+          className="mt-5 cursor-pointer text-sm font-bold text-ink/50 underline"
+        >
+          {mode === "login" ? "Não tenho conta — quero criar" : "Já tenho conta — quero entrar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ============================ Componente ============================ */
 
 function Index() {
-  // Registros carregados do localStorage na primeira renderização
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [records, setRecords] = useState<PunchRecord[]>([]);
-  const [hydrated, setHydrated] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Relógio ao vivo (atualiza a cada segundo)
-  const [now, setNow] = useState(() => Date.now());
+  // Relógio ao vivo (só depois da hidratação, para não divergir do HTML do servidor)
+  const [now, setNow] = useState<number | null>(null);
 
-  // Quando o usuário clica em "Bater Ponto", guardamos o timestamp EXATO
-  // do clique e abrimos o modal para escolher o tipo.
+  // Modal do ponto atual: guarda o timestamp EXATO do clique + observação
   const [pendingPunch, setPendingPunch] = useState<number | null>(null);
+  const [pendingType, setPendingType] = useState<PunchType | null>(null);
+  const [pendingNote, setPendingNote] = useState("");
 
-  // Mês exibido nos totais/tabela (formato "YYYY-MM")
+  // Modal do ponto retroativo
+  const [retroOpen, setRetroOpen] = useState(false);
+  const [retroDate, setRetroDate] = useState("");
+  const [retroTime, setRetroTime] = useState("08:00");
+  const [retroType, setRetroType] = useState<PunchType>("entrada");
+  const [retroNote, setRetroNote] = useState("");
+  const [retroError, setRetroError] = useState<string | null>(null);
+
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  /* ---------------------------- Sessão ---------------------------- */
   useEffect(() => {
-    setRecords(loadRecords());
-    setHydrated(true);
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
-  // Persiste a cada mudança
-  useEffect(() => {
-    if (hydrated) saveRecords(records);
-  }, [records, hydrated]);
+  /* ------------------- Carrega registros do banco ------------------- */
+  const fetchRecords = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("punch_records")
+      .select("id, punched_at, type, note, is_retroactive")
+      .order("punched_at", { ascending: true });
+    if (!error && data) {
+      setRecords(
+        data.map((r) => ({
+          id: r.id,
+          timestamp: new Date(r.punched_at).getTime(),
+          type: r.type as PunchType,
+          note: r.note,
+          retroactive: r.is_retroactive,
+        })),
+      );
+    }
+    setLoading(false);
+  }, []);
 
-  // Passo 1: captura a hora exata e abre o modal
+  useEffect(() => {
+    if (session) {
+      setLoading(true);
+      void fetchRecords();
+    } else {
+      setRecords([]);
+      setLoading(false);
+    }
+  }, [session, fetchRecords]);
+
+  /* --------------------------- Ações --------------------------- */
+
+  // Passo 1: captura a hora exata do clique e abre o modal
   const handlePunch = useCallback(() => {
     setPendingPunch(Date.now());
+    setPendingType(null);
+    setPendingNote("");
   }, []);
 
-  // Passo 2: o usuário escolheu o tipo no modal — salva o registro
-  const handleChooseType = useCallback(
-    (type: PunchType) => {
+  // Passo 2: salva no banco com tipo escolhido e observação opcional
+  const savePunch = useCallback(
+    async (type: PunchType) => {
       if (pendingPunch === null) return;
-      setRecords((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), timestamp: pendingPunch, type },
-      ]);
+      const at = new Date(pendingPunch).toISOString();
       setPendingPunch(null);
+      setPendingType(null);
+      const note = pendingNote.trim();
+      setPendingNote("");
+      await supabase.from("punch_records").insert({
+        punched_at: at,
+        type,
+        note: note.length > 0 ? note.slice(0, 500) : null,
+        is_retroactive: false,
+      });
+      await fetchRecords();
     },
-    [pendingPunch],
+    [pendingPunch, pendingNote, fetchRecords],
   );
 
-  const handleDelete = useCallback((id: string) => {
-    setRecords((prev) => prev.filter((r) => r.id !== id));
+  // Ponto retroativo: usuário informa data, hora, período e observação
+  const saveRetro = useCallback(async () => {
+    setRetroError(null);
+    if (!retroDate || !retroTime) {
+      setRetroError("Informe a data e a hora do registro.");
+      return;
+    }
+    const [y, m, d] = retroDate.split("-").map(Number) as [number, number, number];
+    const [hh, mm] = retroTime.split(":").map(Number) as [number, number];
+    const when = new Date(y, m - 1, d, hh, mm, 0, 0);
+    if (Number.isNaN(when.getTime())) {
+      setRetroError("Data ou hora inválida.");
+      return;
+    }
+    const note = retroNote.trim();
+    await supabase.from("punch_records").insert({
+      punched_at: when.toISOString(),
+      type: retroType,
+      note: note.length > 0 ? note.slice(0, 500) : null,
+      is_retroactive: true,
+    });
+    setRetroOpen(false);
+    setRetroNote("");
+    // mostra o mês do registro criado
+    setMonth(`${y}-${String(m).padStart(2, "0")}`);
+    await fetchRecords();
+  }, [retroDate, retroTime, retroType, retroNote, fetchRecords]);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      setRecords((prev) => prev.filter((r) => r.id !== id));
+      await supabase.from("punch_records").delete().eq("id", id);
+    },
+    [],
+  );
+
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setRecords([]);
   }, []);
 
-  // Registros do mês selecionado, agrupados por dia (dia mais recente primeiro,
-  // e dentro do dia do mais antigo para o mais recente)
+  /* ------------------- Agrupamentos e totais ------------------- */
+
   const groupedDays = useMemo(() => {
     const inMonth = records.filter((r) => fmtDayKey(r.timestamp).startsWith(month));
     const byDay = new Map<string, PunchRecord[]>();
@@ -200,14 +380,13 @@ function Index() {
       byDay.get(key)!.push(r);
     }
     return [...byDay.entries()]
-      .sort((a, b) => b[0].localeCompare(a[0])) // dias: recente → antigo
+      .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([dayKey, recs]) => {
-        const sorted = recs.sort((a, b) => a.timestamp - b.timestamp); // cronológico
+        const sorted = recs.sort((a, b) => a.timestamp - b.timestamp);
         return { dayKey, records: sorted, minutes: minutesWorked(sorted) };
       });
   }, [records, month]);
 
-  // Totalizador do mês (soma dos minutos de todos os dias)
   const monthMinutes = useMemo(
     () => groupedDays.reduce((acc, d) => acc + d.minutes, 0),
     [groupedDays],
@@ -219,7 +398,6 @@ function Index() {
       month: "long",
       year: "numeric",
     });
-    // capitaliza só a primeira letra ("setembro de 2026" → "Setembro de 2026")
     return raw.charAt(0).toUpperCase() + raw.slice(1);
   }, [month]);
 
@@ -230,11 +408,6 @@ function Index() {
   };
 
   /* ================== Geração do PDF (jsPDF + autotable) ================== */
-  /*
-   * Montamos uma tabela simples: uma linha por registro (Dia | Tipo | Hora)
-   * mais uma linha de subtotal por dia, e ao final os totais do mês em
-   * HH:MM e decimal. Tudo desenhado pelo jsPDF — sem depender de print do navegador.
-   */
   const exportPdf = useCallback(() => {
     const doc = new jsPDF();
     const [y, m] = month.split("-").map(Number) as [number, number];
@@ -249,38 +422,39 @@ function Index() {
     doc.text(`Mês de referência: ${monthName}`, 14, 28);
     doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, 14, 34);
 
-    // Linhas da tabela: registros cronológicos + subtotal por dia
+    // Uma linha por registro (Data | Tipo | Hora | Observação) + subtotal por dia
     const body: string[][] = [];
-    // dias em ordem cronológica no PDF (antigo → recente)
     const daysAsc = [...groupedDays].sort((a, b) => a.dayKey.localeCompare(b.dayKey));
     for (const day of daysAsc) {
       for (const r of day.records) {
         body.push([
           new Date(r.timestamp).toLocaleDateString("pt-BR"),
-          TYPE_META[r.type].label,
+          TYPE_META[r.type].label + (r.retroactive ? " (retroativo)" : ""),
           fmtTime(r.timestamp),
+          r.note ?? "",
           "",
         ]);
       }
-      body.push(["", `Total do dia (${fmtDayLabel(day.dayKey)})`, "", toHHMM(day.minutes)]);
+      body.push(["", `Total do dia (${fmtDayLabel(day.dayKey)})`, "", "", toHHMM(day.minutes)]);
     }
 
     autoTable(doc, {
       startY: 40,
-      head: [["Data", "Tipo", "Hora", "Total dia"]],
+      head: [["Data", "Tipo", "Hora", "Observação", "Total dia"]],
       body,
-      styles: { fontSize: 10 },
+      styles: { fontSize: 9 },
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
-      // Destaque visual nas linhas de subtotal
       didParseCell: (data) => {
-        if (data.section === "body" && String((data.row.raw as string[])[1]).startsWith("Total do dia")) {
+        if (
+          data.section === "body" &&
+          String((data.row.raw as string[])[1]).startsWith("Total do dia")
+        ) {
           data.cell.styles.fontStyle = "bold";
           data.cell.styles.fillColor = [255, 210, 63];
         }
       },
     });
 
-    // Totais do mês abaixo da tabela
     const finalY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable
       .finalY;
     doc.setFontSize(13);
@@ -290,16 +464,30 @@ function Index() {
     doc.save(`relatorio-ponto-${month}.pdf`);
   }, [groupedDays, month, monthMinutes]);
 
-  const nowDate = new Date(now);
+  /* --------------------------- Render --------------------------- */
+
+  if (!authReady) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-paper text-ink">
+        <p className="text-lg font-bold">Carregando…</p>
+      </div>
+    );
+  }
+
+  if (!session) return <AuthScreen />;
+
+  const nowDate = now === null ? null : new Date(now);
   const todayChip = nowDate
-    .toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })
-    .replace(".", "");
+    ? nowDate
+        .toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })
+        .replace(".", "")
+    : "";
 
   return (
     <div className="min-h-screen bg-paper text-ink selection:bg-lemon selection:text-ink">
       {/* Header */}
       <header className="mx-auto max-w-5xl px-5 pt-8 sm:px-8">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="grid size-11 place-items-center rounded-2xl bg-ink text-xl font-bold text-lemon">
               ⏱
@@ -307,14 +495,24 @@ function Index() {
             <div>
               <p className="text-lg leading-none font-bold tracking-tight">PontoFácil</p>
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-ink/40">
-                fechamento mensal
+                {session.user.email ?? "minha conta"}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-full bg-mint px-4 py-2 text-sm font-bold text-ink shadow-punch-sm">
-            <span className="size-2 animate-pulse rounded-full bg-ink"></span>
-            Ao vivo ·{" "}
-            {nowDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          <div className="flex items-center gap-2">
+            {nowDate && (
+              <div className="flex items-center gap-2 rounded-full bg-mint px-4 py-2 text-sm font-bold text-ink shadow-punch-sm">
+                <span className="size-2 animate-pulse rounded-full bg-ink"></span>
+                Ao vivo ·{" "}
+                {nowDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+              </div>
+            )}
+            <button
+              onClick={signOut}
+              className="cursor-pointer rounded-full border-2 border-ink bg-paper px-4 py-2 text-sm font-bold shadow-punch-sm transition active:translate-x-0.5 active:translate-y-0.5"
+            >
+              Sair
+            </button>
           </div>
         </div>
       </header>
@@ -330,11 +528,11 @@ function Index() {
           <span className="text-coral">A gente conta</span> as horas.
         </h1>
         <p className="mt-4 max-w-md text-base font-medium text-ink/60">
-          Um clique, um registro. Nada de planilhas, nada de "depois eu anoto".
+          Um clique, um registro — salvo na sua conta, com observação e ponto retroativo.
         </p>
       </section>
 
-      {/* Botão principal — captura o timestamp EXATO do clique */}
+      {/* Botão principal */}
       <section className="mx-auto max-w-5xl px-5 pt-10 sm:px-8">
         <div className="relative">
           <div className="absolute inset-0 translate-x-2 translate-y-2 rounded-[2.5rem] bg-coral"></div>
@@ -350,6 +548,16 @@ function Index() {
             </span>
           </button>
         </div>
+        <button
+          onClick={() => {
+            setRetroOpen(true);
+            setRetroError(null);
+            if (!retroDate) setRetroDate(todayInputValue());
+          }}
+          className="mt-4 w-full cursor-pointer rounded-2xl border-2 border-ink bg-lilac px-6 py-4 text-lg font-bold shadow-punch transition active:translate-x-1 active:translate-y-1"
+        >
+          🗓 Registrar ponto retroativo
+        </button>
       </section>
 
       {/* Totalizadores do mês */}
@@ -398,7 +606,7 @@ function Index() {
         </div>
       </section>
 
-      {/* Tabela de registros agrupada por dia */}
+      {/* Tabela de registros */}
       <section className="mx-auto max-w-5xl px-5 pt-10 pb-16 sm:px-8">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-2xl font-bold">Registros do mês</h2>
@@ -411,16 +619,19 @@ function Index() {
           </button>
         </div>
 
-        {groupedDays.length === 0 ? (
+        {loading ? (
+          <div className="rounded-3xl border-2 border-dashed border-ink/30 p-10 text-center">
+            <p className="text-lg font-bold">Carregando registros…</p>
+          </div>
+        ) : groupedDays.length === 0 ? (
           <div className="rounded-3xl border-2 border-dashed border-ink/30 p-10 text-center">
             <p className="text-lg font-bold">Nenhum registro neste mês</p>
             <p className="mt-1 text-sm font-medium text-ink/50">
-              Bata o ponto acima para começar.
+              Bata o ponto acima ou registre um ponto retroativo.
             </p>
           </div>
         ) : (
           <div className="overflow-hidden rounded-3xl border-2 border-ink shadow-punch">
-            {/* Cabeçalho da tabela */}
             <div className="grid grid-cols-[1fr_auto_auto] gap-2 bg-ink px-5 py-3 text-[11px] font-bold uppercase tracking-[0.15em] text-lemon sm:grid-cols-[1.4fr_1fr_1fr_auto]">
               <span>Tipo</span>
               <span>Hora</span>
@@ -430,7 +641,6 @@ function Index() {
 
             {groupedDays.map((day, di) => (
               <div key={day.dayKey}>
-                {/* Faixa de agrupamento do dia, com o total calculado */}
                 <div
                   className={`flex items-center justify-between px-5 py-2 text-[11px] font-bold uppercase tracking-[0.15em] text-ink/70 ${
                     di % 2 === 0 ? "bg-lemon/40" : "bg-mint/40"
@@ -442,28 +652,38 @@ function Index() {
                 {day.records.map((r) => (
                   <div
                     key={r.id}
-                    className="grid grid-cols-[1fr_auto_auto] items-center gap-2 border-t-2 border-ink/10 px-5 py-4 sm:grid-cols-[1.4fr_1fr_1fr_auto]"
+                    className="border-t-2 border-ink/10 px-5 py-4"
                   >
-                    <span className="flex items-center gap-2 font-semibold">
-                      <span
-                        className={`size-2.5 rounded-full ${TYPE_META[r.type].dot}`}
-                      ></span>
-                      {TYPE_META[r.type].label}
-                    </span>
-                    <span className="font-mono font-bold">{fmtTime(r.timestamp)}</span>
-                    <span className="hidden text-sm font-bold text-ink/60 sm:block">
-                      {new Date(r.timestamp).toLocaleDateString("pt-BR", {
-                        day: "2-digit",
-                        month: "2-digit",
-                      })}
-                    </span>
-                    <button
-                      onClick={() => handleDelete(r.id)}
-                      aria-label="Excluir registro"
-                      className="cursor-pointer justify-self-end rounded-full border border-ink/20 px-2 py-0.5 text-xs font-bold text-ink/40 transition hover:border-coral hover:text-coral"
-                    >
-                      ✕
-                    </button>
+                    <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 sm:grid-cols-[1.4fr_1fr_1fr_auto]">
+                      <span className="flex items-center gap-2 font-semibold">
+                        <span
+                          className={`size-2.5 rounded-full ${TYPE_META[r.type].dot}`}
+                        ></span>
+                        {TYPE_META[r.type].label}
+                        {r.retroactive && (
+                          <span className="rounded-full bg-lilac px-2 py-0.5 text-[10px] font-bold uppercase">
+                            retroativo
+                          </span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold">{fmtTime(r.timestamp)}</span>
+                      <span className="hidden text-sm font-bold text-ink/60 sm:block">
+                        {new Date(r.timestamp).toLocaleDateString("pt-BR", {
+                          day: "2-digit",
+                          month: "2-digit",
+                        })}
+                      </span>
+                      <button
+                        onClick={() => handleDelete(r.id)}
+                        aria-label="Excluir registro"
+                        className="cursor-pointer justify-self-end rounded-full border border-ink/20 px-2 py-0.5 text-xs font-bold text-ink/40 transition hover:border-coral hover:text-coral"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {r.note && (
+                      <p className="mt-1 text-sm font-medium text-ink/60">📝 {r.note}</p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -471,14 +691,14 @@ function Index() {
           </div>
         )}
         <p className="mt-4 text-center text-xs font-medium text-ink/40">
-          dados salvos no navegador · localStorage
+          registros salvos com segurança na sua conta
         </p>
       </section>
 
-      {/* Modal: seleção do tipo de registro */}
+      {/* Modal: ponto atual (tipo + observação) */}
       {pendingPunch !== null && (
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4"
+          className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-ink/50 p-4"
           onClick={() => setPendingPunch(null)}
         >
           <div
@@ -494,8 +714,10 @@ function Index() {
               {(Object.keys(TYPE_META) as PunchType[]).map((type) => (
                 <button
                   key={type}
-                  onClick={() => handleChooseType(type)}
-                  className={`cursor-pointer rounded-2xl border-2 border-ink px-4 py-5 text-left shadow-punch-sm transition active:translate-x-1 active:translate-y-1 ${TYPE_META[type].chip}`}
+                  onClick={() => setPendingType(type)}
+                  className={`cursor-pointer rounded-2xl border-2 px-4 py-5 text-left shadow-punch-sm transition active:translate-x-1 active:translate-y-1 ${
+                    pendingType === type ? "border-ink ring-4 ring-ink/20" : "border-ink"
+                  } ${TYPE_META[type].chip}`}
                 >
                   <span className="text-2xl">{TYPE_META[type].emoji}</span>
                   <span className="mt-2 block text-lg font-bold leading-tight">
@@ -504,11 +726,118 @@ function Index() {
                 </button>
               ))}
             </div>
+
+            <label className="mt-5 block text-xs font-bold uppercase tracking-[0.15em] text-ink/50">
+              Observação (opcional)
+            </label>
+            <textarea
+              value={pendingNote}
+              onChange={(e) => setPendingNote(e.target.value)}
+              maxLength={500}
+              rows={2}
+              placeholder="Ex.: saída antecipada para consulta médica"
+              className="mt-1 w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-medium outline-none focus:shadow-punch-sm"
+            />
+
+            <button
+              onClick={() => pendingType && void savePunch(pendingType)}
+              disabled={!pendingType}
+              className="mt-4 w-full cursor-pointer rounded-2xl bg-ink py-3 text-lg font-bold text-lemon shadow-punch transition active:translate-x-1 active:translate-y-1 disabled:opacity-40"
+            >
+              Salvar registro
+            </button>
             <button
               onClick={() => setPendingPunch(null)}
-              className="mt-5 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 transition hover:border-ink hover:text-ink"
+              className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 transition hover:border-ink hover:text-ink"
             >
               Cancelar (descarta este registro)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: ponto retroativo (data + hora + período + observação) */}
+      {retroOpen && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-ink/50 p-4"
+          onClick={() => setRetroOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-2xl font-bold">Ponto retroativo</h2>
+            <p className="text-sm font-medium text-ink/50">
+              informe a data, a hora e o período do registro
+            </p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-[0.15em] text-ink/50">
+                  Data
+                </label>
+                <input
+                  type="date"
+                  value={retroDate}
+                  onChange={(e) => setRetroDate(e.target.value)}
+                  className="mt-1 w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-medium outline-none focus:shadow-punch-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-[0.15em] text-ink/50">
+                  Hora
+                </label>
+                <input
+                  type="time"
+                  value={retroTime}
+                  onChange={(e) => setRetroTime(e.target.value)}
+                  className="mt-1 w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono font-bold outline-none focus:shadow-punch-sm"
+                />
+              </div>
+            </div>
+
+            <label className="mt-4 block text-xs font-bold uppercase tracking-[0.15em] text-ink/50">
+              Período
+            </label>
+            <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {(Object.keys(TYPE_META) as PunchType[]).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setRetroType(type)}
+                  className={`cursor-pointer rounded-2xl border-2 border-ink px-3 py-3 text-sm font-bold shadow-punch-sm transition active:translate-x-0.5 active:translate-y-0.5 ${
+                    retroType === type ? TYPE_META[type].chip : "bg-paper text-ink"
+                  }`}
+                >
+                  {TYPE_META[type].label}
+                </button>
+              ))}
+            </div>
+
+            <label className="mt-4 block text-xs font-bold uppercase tracking-[0.15em] text-ink/50">
+              Observação (opcional)
+            </label>
+            <textarea
+              value={retroNote}
+              onChange={(e) => setRetroNote(e.target.value)}
+              maxLength={500}
+              rows={2}
+              placeholder="Ex.: esqueci de bater na hora"
+              className="mt-1 w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-medium outline-none focus:shadow-punch-sm"
+            />
+
+            {retroError && <p className="mt-3 text-sm font-bold text-coral">{retroError}</p>}
+
+            <button
+              onClick={() => void saveRetro()}
+              className="mt-4 w-full cursor-pointer rounded-2xl bg-ink py-3 text-lg font-bold text-lemon shadow-punch transition active:translate-x-1 active:translate-y-1"
+            >
+              Salvar ponto retroativo
+            </button>
+            <button
+              onClick={() => setRetroOpen(false)}
+              className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 transition hover:border-ink hover:text-ink"
+            >
+              Cancelar
             </button>
           </div>
         </div>
