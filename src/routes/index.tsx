@@ -354,14 +354,15 @@ function Index() {
   // Passo 2: salva no banco com tipo escolhido e observação opcional
   const savePunch = useCallback(
     async (type: PunchType) => {
-      if (pendingPunch === null) return;
+      const userId = session?.user.id;
+      if (pendingPunch === null || !userId) return;
       const at = new Date(pendingPunch).toISOString();
       setPendingPunch(null);
       setPendingType(null);
       const note = pendingNote.trim();
       setPendingNote("");
       await supabase.from("punch_records").insert({
-        user_id: session?.user.id,
+        user_id: userId,
         punched_at: at,
         type,
         note: note.length > 0 ? note.slice(0, 500) : null,
@@ -375,6 +376,11 @@ function Index() {
   // Ponto retroativo: usuário informa data, hora, período e observação
   const saveRetro = useCallback(async () => {
     setRetroError(null);
+    const userId = session?.user.id;
+    if (!userId) {
+      setRetroError("Sua sessão expirou. Entre novamente para salvar.");
+      return;
+    }
     if (!retroDate || !retroTime) {
       setRetroError("Informe a data e a hora do registro.");
       return;
@@ -388,7 +394,7 @@ function Index() {
     }
     const note = retroNote.trim();
     await supabase.from("punch_records").insert({
-      user_id: session?.user.id,
+      user_id: userId,
       punched_at: when.toISOString(),
       type: retroType,
       note: note.length > 0 ? note.slice(0, 500) : null,
@@ -700,7 +706,7 @@ function Index() {
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-2xl font-bold">Registros do mês</h2>
           <button
-            onClick={exportPdf}
+            onClick={openExport}
             disabled={groupedDays.length === 0}
             className="cursor-pointer rounded-full border-2 border-ink bg-lemon px-4 py-2 text-sm font-bold shadow-punch-sm transition active:translate-x-1 active:translate-y-1 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -720,69 +726,90 @@ function Index() {
             </p>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-3xl border-2 border-ink shadow-punch">
-            <div className="grid grid-cols-[1fr_auto_auto] gap-2 bg-ink px-5 py-3 text-[11px] font-bold uppercase tracking-[0.15em] text-lemon sm:grid-cols-[1.4fr_1fr_1fr_auto]">
-              <span>Tipo</span>
-              <span>Hora</span>
-              <span className="hidden sm:block">Dia</span>
-              <span className="text-right">Ações</span>
-            </div>
-
-            {groupedDays.map((day, di) => (
-              <div key={day.dayKey}>
-                <div
-                  className={`flex items-center justify-between px-5 py-2 text-[11px] font-bold uppercase tracking-[0.15em] text-ink/70 ${
-                    di % 2 === 0 ? "bg-lemon/40" : "bg-mint/40"
-                  }`}
-                >
-                  <span>{fmtDayLabel(day.dayKey)}</span>
-                  <span className="font-mono">total {toHHMM(day.minutes)}</span>
-                </div>
-                {day.records.map((r) => (
-                  <div
-                    key={r.id}
-                    className="border-t-2 border-ink/10 px-5 py-4"
-                  >
-                    <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 sm:grid-cols-[1.4fr_1fr_1fr_auto]">
-                      <span className="flex items-center gap-2 font-semibold">
-                        <span
-                          className={`size-2.5 rounded-full ${TYPE_META[r.type].dot}`}
-                        ></span>
-                        {TYPE_META[r.type].label}
-                        {r.retroactive && (
-                          <span className="rounded-full bg-lilac px-2 py-0.5 text-[10px] font-bold uppercase">
-                            retroativo
-                          </span>
-                        )}
-                      </span>
-                      <span className="font-mono font-bold">{fmtTime(r.timestamp)}</span>
-                      <span className="hidden text-sm font-bold text-ink/60 sm:block">
-                        {new Date(r.timestamp).toLocaleDateString("pt-BR", {
-                          day: "2-digit",
-                          month: "2-digit",
-                        })}
-                      </span>
-                      <button
-                        onClick={() => handleDelete(r.id)}
-                        aria-label="Excluir registro"
-                        className="cursor-pointer justify-self-end rounded-full border border-ink/20 px-2 py-0.5 text-xs font-bold text-ink/40 transition hover:border-coral hover:text-coral"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    {r.note && (
-                      <p className="mt-1 text-sm font-medium text-ink/60">📝 {r.note}</p>
-                    )}
-                  </div>
+          <div className="overflow-x-auto rounded-3xl border-2 border-ink shadow-punch">
+            <table className="w-full min-w-[880px] border-collapse text-left">
+              <thead className="bg-ink text-[11px] font-bold uppercase tracking-[0.12em] text-lemon">
+                <tr>
+                  <th className="px-4 py-3">Data</th>
+                  <th className="px-3 py-3">Entrada</th>
+                  <th className="px-3 py-3">Saída almoço</th>
+                  <th className="px-3 py-3">Retorno almoço</th>
+                  <th className="px-3 py-3">Saída</th>
+                  <th className="px-3 py-3">Total</th>
+                  <th className="px-4 py-3">Observações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedDays.map((day, dayIndex) => (
+                  <tr key={day.dayKey} className={`border-t-2 border-ink ${dayIndex % 2 === 0 ? "bg-lemon/20" : "bg-mint/15"}`}>
+                    <td className="whitespace-nowrap px-4 py-4 align-top">
+                      <span className="block font-mono font-bold">{fmtDate(day.dayKey)}</span>
+                      <span className="text-xs font-semibold capitalize text-ink/50">{fmtDayLabel(day.dayKey).split(" · ")[0]}</span>
+                    </td>
+                    {(["entrada", "saida_almoco", "retorno_almoco", "saida"] as PunchType[]).map((type) => (
+                      <td key={type} className="px-3 py-4 align-top">
+                        <div className="flex flex-col gap-1.5">
+                          {day.records.filter((record) => record.type === type).map((record) => (
+                            <span key={record.id} className={`inline-flex w-fit items-center gap-1 rounded-lg border border-ink px-2 py-1 font-mono text-xs font-bold ${record.retroactive ? "bg-lilac" : TYPE_META[type].chip}`}>
+                              {fmtTime(record.timestamp).slice(0, 5)}
+                              {record.retroactive && <span title="Retroativo">*</span>}
+                              <button
+                                onClick={() => handleDelete(record.id)}
+                                aria-label={`Excluir ${TYPE_META[type].label} de ${fmtDate(day.dayKey)}`}
+                                title="Excluir registro"
+                                className="ml-0.5 cursor-pointer font-bold opacity-50 hover:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                          {!day.records.some((record) => record.type === type) && <span className="text-ink/30">—</span>}
+                        </div>
+                      </td>
+                    ))}
+                    <td className="px-3 py-4 align-top font-mono font-bold">{toHHMM(day.minutes)}</td>
+                    <td className="max-w-56 px-4 py-4 align-top text-sm font-medium text-ink/65">
+                      {day.records.some((record) => record.note) ? day.records.filter((record) => record.note).map((record) => (
+                        <p key={record.id} className="mb-1 last:mb-0"><strong>{TYPE_META[record.type].label}:</strong> {record.note}</p>
+                      )) : "—"}
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            ))}
+              </tbody>
+            </table>
           </div>
         )}
         <p className="mt-4 text-center text-xs font-medium text-ink/40">
           registros salvos com segurança na sua conta
         </p>
       </section>
+
+      {/* Modal: escolha do intervalo do relatório */}
+      {exportOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" onClick={() => setExportOpen(false)}>
+          <div className="w-full max-w-lg rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch-lg" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-2xl font-bold">Exportar relatório</h2>
+            <p className="mt-1 text-sm font-medium text-ink/50">Escolha o período que deseja incluir no PDF.</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+                Data inicial
+                <input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-sm outline-none focus:shadow-punch-sm" />
+              </label>
+              <label className="text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+                Data final
+                <input type="date" value={exportEnd} onChange={(event) => setExportEnd(event.target.value)} className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-sm outline-none focus:shadow-punch-sm" />
+              </label>
+            </div>
+            {exportError && <p className="mt-3 text-sm font-bold text-coral">{exportError}</p>}
+            <button onClick={exportPdf} className="mt-5 w-full cursor-pointer rounded-2xl bg-ink py-3 text-lg font-bold text-lemon shadow-punch transition active:translate-x-1 active:translate-y-1">
+              ⬇ Gerar PDF
+            </button>
+            <button onClick={() => setExportOpen(false)} className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 hover:border-ink hover:text-ink">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Modal: ponto atual (tipo + observação) */}
       {pendingPunch !== null && (
