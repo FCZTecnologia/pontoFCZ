@@ -107,6 +107,26 @@ function fmtDayLabel(dayKey: string): string {
   return `${weekday} · ${day}`;
 }
 
+function fmtDate(dayKey: string): string {
+  const [y, m, d] = dayKey.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function monthRange(month: string): { start: string; end: string } {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  const lastDay = new Date(y, m, 0).getDate();
+  return { start: `${month}-01`, end: `${month}-${String(lastDay).padStart(2, "0")}` };
+}
+
+function authErrorMessage(message: string): string {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("email not confirmed")) return "Confirme sua conta pelo link enviado ao seu e-mail.";
+  if (normalized.includes("invalid login credentials")) return "E-mail ou senha incorretos. Use a mesma conta criada anteriormente.";
+  if (normalized.includes("user already registered")) return "Esta conta já existe. Selecione “Já tenho conta” para entrar.";
+  if (normalized.includes("rate limit")) return "Muitas tentativas. Aguarde alguns minutos e tente novamente.";
+  return "Não foi possível acessar sua conta agora. Tente novamente.";
+}
+
 // valores iniciais para os campos do formulário retroativo
 function todayInputValue(): string {
   const d = new Date();
@@ -136,11 +156,11 @@ function AuthScreen() {
         password,
         options: { emailRedirectTo: window.location.origin },
       });
-      if (error) setError(error.message);
+      if (error) setError(authErrorMessage(error.message));
       else if (!data.session) setMsg("Confira seu e-mail para confirmar a conta.");
     } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setError("E-mail ou senha inválidos.");
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) setError(authErrorMessage(error.message));
     }
     setBusy(false);
   };
@@ -249,6 +269,15 @@ function Index() {
   const [retroNote, setRetroNote] = useState("");
   const [retroError, setRetroError] = useState<string | null>(null);
 
+  // Período escolhido pelo usuário para o relatório.
+  const initialRange = monthRange(
+    `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`,
+  );
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportStart, setExportStart] = useState(initialRange.start);
+  const [exportEnd, setExportEnd] = useState(initialRange.end);
+  const [exportError, setExportError] = useState<string | null>(null);
+
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -256,11 +285,25 @@ function Index() {
 
   /* ---------------------------- Sessão ---------------------------- */
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthReady(true);
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+        setSession(nextSession);
+      } else if (event === "SIGNED_OUT") {
+        setSession(null);
+        setRecords([]);
+      }
     });
+    void (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        setSession(null);
+        setAuthReady(true);
+        return;
+      }
+      const { data: userData, error } = await supabase.auth.getUser();
+      setSession(!error && userData.user ? sessionData.session : null);
+      setAuthReady(true);
+    })();
     setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => {
@@ -311,13 +354,15 @@ function Index() {
   // Passo 2: salva no banco com tipo escolhido e observação opcional
   const savePunch = useCallback(
     async (type: PunchType) => {
-      if (pendingPunch === null) return;
+      const userId = session?.user.id;
+      if (pendingPunch === null || !userId) return;
       const at = new Date(pendingPunch).toISOString();
       setPendingPunch(null);
       setPendingType(null);
       const note = pendingNote.trim();
       setPendingNote("");
       await supabase.from("punch_records").insert({
+        user_id: userId,
         punched_at: at,
         type,
         note: note.length > 0 ? note.slice(0, 500) : null,
@@ -325,12 +370,17 @@ function Index() {
       });
       await fetchRecords();
     },
-    [pendingPunch, pendingNote, fetchRecords],
+    [pendingPunch, pendingNote, fetchRecords, session?.user.id],
   );
 
   // Ponto retroativo: usuário informa data, hora, período e observação
   const saveRetro = useCallback(async () => {
     setRetroError(null);
+    const userId = session?.user.id;
+    if (!userId) {
+      setRetroError("Sua sessão expirou. Entre novamente para salvar.");
+      return;
+    }
     if (!retroDate || !retroTime) {
       setRetroError("Informe a data e a hora do registro.");
       return;
@@ -344,6 +394,7 @@ function Index() {
     }
     const note = retroNote.trim();
     await supabase.from("punch_records").insert({
+      user_id: userId,
       punched_at: when.toISOString(),
       type: retroType,
       note: note.length > 0 ? note.slice(0, 500) : null,
@@ -354,7 +405,7 @@ function Index() {
     // mostra o mês do registro criado
     setMonth(`${y}-${String(m).padStart(2, "0")}`);
     await fetchRecords();
-  }, [retroDate, retroTime, retroType, retroNote, fetchRecords]);
+  }, [retroDate, retroTime, retroType, retroNote, fetchRecords, session?.user.id]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -365,8 +416,11 @@ function Index() {
   );
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setRecords([]);
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (!error) {
+      setSession(null);
+      setRecords([]);
+    }
   }, []);
 
   /* ------------------- Agrupamentos e totais ------------------- */
@@ -408,61 +462,102 @@ function Index() {
   };
 
   /* ================== Geração do PDF (jsPDF + autotable) ================== */
+  const openExport = useCallback(() => {
+    const range = monthRange(month);
+    setExportStart(range.start);
+    setExportEnd(range.end);
+    setExportError(null);
+    setExportOpen(true);
+  }, [month]);
+
   const exportPdf = useCallback(() => {
-    const doc = new jsPDF();
-    const [y, m] = month.split("-").map(Number) as [number, number];
-    const monthName = new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
-      month: "long",
-      year: "numeric",
-    });
+    setExportError(null);
+    if (!exportStart || !exportEnd) {
+      setExportError("Informe a data inicial e a data final.");
+      return;
+    }
+    if (exportStart > exportEnd) {
+      setExportError("A data inicial deve ser anterior à data final.");
+      return;
+    }
+
+    const byDay = new Map<string, PunchRecord[]>();
+    for (const record of records) {
+      const key = fmtDayKey(record.timestamp);
+      if (key < exportStart || key > exportEnd) continue;
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key)?.push(record);
+    }
+    const exportDays = [...byDay.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dayKey, dayRecords]) => {
+        const sorted = dayRecords.sort((a, b) => a.timestamp - b.timestamp);
+        return { dayKey, records: sorted, minutes: minutesWorked(sorted) };
+      });
+    if (exportDays.length === 0) {
+      setExportError("Não há registros no período escolhido.");
+      return;
+    }
+
+    const doc = new jsPDF({ orientation: "landscape" });
+    const periodMinutes = exportDays.reduce((sum, day) => sum + day.minutes, 0);
 
     doc.setFontSize(18);
     doc.text("PontoFácil — Relatório de Ponto", 14, 20);
     doc.setFontSize(11);
-    doc.text(`Mês de referência: ${monthName}`, 14, 28);
+    doc.text(`Período: ${fmtDate(exportStart)} a ${fmtDate(exportEnd)}`, 14, 28);
     doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, 14, 34);
 
-    // Uma linha por registro (Data | Tipo | Hora | Observação) + subtotal por dia
-    const body: string[][] = [];
-    const daysAsc = [...groupedDays].sort((a, b) => a.dayKey.localeCompare(b.dayKey));
-    for (const day of daysAsc) {
-      for (const r of day.records) {
-        body.push([
-          new Date(r.timestamp).toLocaleDateString("pt-BR"),
-          TYPE_META[r.type].label + (r.retroactive ? " (retroativo)" : ""),
-          fmtTime(r.timestamp),
-          r.note ?? "",
-          "",
-        ]);
-      }
-      body.push(["", `Total do dia (${fmtDayLabel(day.dayKey)})`, "", "", toHHMM(day.minutes)]);
-    }
+    // Uma linha por dia, com cada período em sua própria coluna.
+    const body = exportDays.map((day) => {
+      const times = (type: PunchType) => day.records
+        .filter((record) => record.type === type)
+        .map((record) => `${fmtTime(record.timestamp).slice(0, 5)}${record.retroactive ? "*" : ""}`)
+        .join(" / ") || "—";
+      const notes = day.records
+        .filter((record) => record.note)
+        .map((record) => `${TYPE_META[record.type].label}: ${record.note}`)
+        .join("; ");
+      return [
+        fmtDate(day.dayKey),
+        times("entrada"),
+        times("saida_almoco"),
+        times("retorno_almoco"),
+        times("saida"),
+        toHHMM(day.minutes),
+        notes || "—",
+      ];
+    });
 
     autoTable(doc, {
       startY: 40,
-      head: [["Data", "Tipo", "Hora", "Observação", "Total dia"]],
+      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Total", "Observações"]],
       body,
-      styles: { fontSize: 9 },
+      styles: { fontSize: 8, cellPadding: 2.5, overflow: "linebreak" },
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
-      didParseCell: (data) => {
-        if (
-          data.section === "body" &&
-          String((data.row.raw as string[])[1]).startsWith("Total do dia")
-        ) {
-          data.cell.styles.fontStyle = "bold";
-          data.cell.styles.fillColor = [255, 210, 63];
-        }
+      alternateRowStyles: { fillColor: [245, 242, 231] },
+      columnStyles: {
+        0: { cellWidth: 24 },
+        1: { cellWidth: 28 },
+        2: { cellWidth: 31 },
+        3: { cellWidth: 34 },
+        4: { cellWidth: 28 },
+        5: { cellWidth: 22, fontStyle: "bold" },
+        6: { cellWidth: 90 },
       },
     });
 
     const finalY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable
       .finalY;
     doc.setFontSize(13);
-    doc.text(`Total do mês: ${toHHMM(monthMinutes)} (HH:MM)`, 14, finalY + 12);
-    doc.text(`Equivalente decimal: ${toDecimal(monthMinutes)} horas`, 14, finalY + 20);
+    doc.text(`Total do período: ${toHHMM(periodMinutes)} (HH:MM)`, 14, finalY + 12);
+    doc.text(`Equivalente decimal: ${toDecimal(periodMinutes)} horas`, 14, finalY + 20);
+    doc.setFontSize(8);
+    doc.text("* registro retroativo", 270, finalY + 12, { align: "right" });
 
-    doc.save(`relatorio-ponto-${month}.pdf`);
-  }, [groupedDays, month, monthMinutes]);
+    doc.save(`relatorio-ponto-${exportStart}-a-${exportEnd}.pdf`);
+    setExportOpen(false);
+  }, [exportEnd, exportStart, records]);
 
   /* --------------------------- Render --------------------------- */
 
@@ -611,7 +706,7 @@ function Index() {
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-2xl font-bold">Registros do mês</h2>
           <button
-            onClick={exportPdf}
+            onClick={openExport}
             disabled={groupedDays.length === 0}
             className="cursor-pointer rounded-full border-2 border-ink bg-lemon px-4 py-2 text-sm font-bold shadow-punch-sm transition active:translate-x-1 active:translate-y-1 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -631,69 +726,90 @@ function Index() {
             </p>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-3xl border-2 border-ink shadow-punch">
-            <div className="grid grid-cols-[1fr_auto_auto] gap-2 bg-ink px-5 py-3 text-[11px] font-bold uppercase tracking-[0.15em] text-lemon sm:grid-cols-[1.4fr_1fr_1fr_auto]">
-              <span>Tipo</span>
-              <span>Hora</span>
-              <span className="hidden sm:block">Dia</span>
-              <span className="text-right">Ações</span>
-            </div>
-
-            {groupedDays.map((day, di) => (
-              <div key={day.dayKey}>
-                <div
-                  className={`flex items-center justify-between px-5 py-2 text-[11px] font-bold uppercase tracking-[0.15em] text-ink/70 ${
-                    di % 2 === 0 ? "bg-lemon/40" : "bg-mint/40"
-                  }`}
-                >
-                  <span>{fmtDayLabel(day.dayKey)}</span>
-                  <span className="font-mono">total {toHHMM(day.minutes)}</span>
-                </div>
-                {day.records.map((r) => (
-                  <div
-                    key={r.id}
-                    className="border-t-2 border-ink/10 px-5 py-4"
-                  >
-                    <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 sm:grid-cols-[1.4fr_1fr_1fr_auto]">
-                      <span className="flex items-center gap-2 font-semibold">
-                        <span
-                          className={`size-2.5 rounded-full ${TYPE_META[r.type].dot}`}
-                        ></span>
-                        {TYPE_META[r.type].label}
-                        {r.retroactive && (
-                          <span className="rounded-full bg-lilac px-2 py-0.5 text-[10px] font-bold uppercase">
-                            retroativo
-                          </span>
-                        )}
-                      </span>
-                      <span className="font-mono font-bold">{fmtTime(r.timestamp)}</span>
-                      <span className="hidden text-sm font-bold text-ink/60 sm:block">
-                        {new Date(r.timestamp).toLocaleDateString("pt-BR", {
-                          day: "2-digit",
-                          month: "2-digit",
-                        })}
-                      </span>
-                      <button
-                        onClick={() => handleDelete(r.id)}
-                        aria-label="Excluir registro"
-                        className="cursor-pointer justify-self-end rounded-full border border-ink/20 px-2 py-0.5 text-xs font-bold text-ink/40 transition hover:border-coral hover:text-coral"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    {r.note && (
-                      <p className="mt-1 text-sm font-medium text-ink/60">📝 {r.note}</p>
-                    )}
-                  </div>
+          <div className="overflow-x-auto rounded-3xl border-2 border-ink shadow-punch">
+            <table className="w-full min-w-[880px] border-collapse text-left">
+              <thead className="bg-ink text-[11px] font-bold uppercase tracking-[0.12em] text-lemon">
+                <tr>
+                  <th className="px-4 py-3">Data</th>
+                  <th className="px-3 py-3">Entrada</th>
+                  <th className="px-3 py-3">Saída almoço</th>
+                  <th className="px-3 py-3">Retorno almoço</th>
+                  <th className="px-3 py-3">Saída</th>
+                  <th className="px-3 py-3">Total</th>
+                  <th className="px-4 py-3">Observações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedDays.map((day, dayIndex) => (
+                  <tr key={day.dayKey} className={`border-t-2 border-ink ${dayIndex % 2 === 0 ? "bg-lemon/20" : "bg-mint/15"}`}>
+                    <td className="whitespace-nowrap px-4 py-4 align-top">
+                      <span className="block font-mono font-bold">{fmtDate(day.dayKey)}</span>
+                      <span className="text-xs font-semibold capitalize text-ink/50">{fmtDayLabel(day.dayKey).split(" · ")[0]}</span>
+                    </td>
+                    {(["entrada", "saida_almoco", "retorno_almoco", "saida"] as PunchType[]).map((type) => (
+                      <td key={type} className="px-3 py-4 align-top">
+                        <div className="flex flex-col gap-1.5">
+                          {day.records.filter((record) => record.type === type).map((record) => (
+                            <span key={record.id} className={`inline-flex w-fit items-center gap-1 rounded-lg border border-ink px-2 py-1 font-mono text-xs font-bold ${record.retroactive ? "bg-lilac" : TYPE_META[type].chip}`}>
+                              {fmtTime(record.timestamp).slice(0, 5)}
+                              {record.retroactive && <span title="Retroativo">*</span>}
+                              <button
+                                onClick={() => handleDelete(record.id)}
+                                aria-label={`Excluir ${TYPE_META[type].label} de ${fmtDate(day.dayKey)}`}
+                                title="Excluir registro"
+                                className="ml-0.5 cursor-pointer font-bold opacity-50 hover:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                          {!day.records.some((record) => record.type === type) && <span className="text-ink/30">—</span>}
+                        </div>
+                      </td>
+                    ))}
+                    <td className="px-3 py-4 align-top font-mono font-bold">{toHHMM(day.minutes)}</td>
+                    <td className="max-w-56 px-4 py-4 align-top text-sm font-medium text-ink/65">
+                      {day.records.some((record) => record.note) ? day.records.filter((record) => record.note).map((record) => (
+                        <p key={record.id} className="mb-1 last:mb-0"><strong>{TYPE_META[record.type].label}:</strong> {record.note}</p>
+                      )) : "—"}
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            ))}
+              </tbody>
+            </table>
           </div>
         )}
         <p className="mt-4 text-center text-xs font-medium text-ink/40">
           registros salvos com segurança na sua conta
         </p>
       </section>
+
+      {/* Modal: escolha do intervalo do relatório */}
+      {exportOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" onClick={() => setExportOpen(false)}>
+          <div className="w-full max-w-lg rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch-lg" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-2xl font-bold">Exportar relatório</h2>
+            <p className="mt-1 text-sm font-medium text-ink/50">Escolha o período que deseja incluir no PDF.</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+                Data inicial
+                <input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-sm outline-none focus:shadow-punch-sm" />
+              </label>
+              <label className="text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+                Data final
+                <input type="date" value={exportEnd} onChange={(event) => setExportEnd(event.target.value)} className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-sm outline-none focus:shadow-punch-sm" />
+              </label>
+            </div>
+            {exportError && <p className="mt-3 text-sm font-bold text-coral">{exportError}</p>}
+            <button onClick={exportPdf} className="mt-5 w-full cursor-pointer rounded-2xl bg-ink py-3 text-lg font-bold text-lemon shadow-punch transition active:translate-x-1 active:translate-y-1">
+              ⬇ Gerar PDF
+            </button>
+            <button onClick={() => setExportOpen(false)} className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 hover:border-ink hover:text-ink">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Modal: ponto atual (tipo + observação) */}
       {pendingPunch !== null && (
