@@ -107,6 +107,26 @@ function fmtDayLabel(dayKey: string): string {
   return `${weekday} · ${day}`;
 }
 
+function fmtDate(dayKey: string): string {
+  const [y, m, d] = dayKey.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function monthRange(month: string): { start: string; end: string } {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  const lastDay = new Date(y, m, 0).getDate();
+  return { start: `${month}-01`, end: `${month}-${String(lastDay).padStart(2, "0")}` };
+}
+
+function authErrorMessage(message: string): string {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("email not confirmed")) return "Confirme sua conta pelo link enviado ao seu e-mail.";
+  if (normalized.includes("invalid login credentials")) return "E-mail ou senha incorretos. Use a mesma conta criada anteriormente.";
+  if (normalized.includes("user already registered")) return "Esta conta já existe. Selecione “Já tenho conta” para entrar.";
+  if (normalized.includes("rate limit")) return "Muitas tentativas. Aguarde alguns minutos e tente novamente.";
+  return "Não foi possível acessar sua conta agora. Tente novamente.";
+}
+
 // valores iniciais para os campos do formulário retroativo
 function todayInputValue(): string {
   const d = new Date();
@@ -136,11 +156,11 @@ function AuthScreen() {
         password,
         options: { emailRedirectTo: window.location.origin },
       });
-      if (error) setError(error.message);
+      if (error) setError(authErrorMessage(error.message));
       else if (!data.session) setMsg("Confira seu e-mail para confirmar a conta.");
     } else {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setError("E-mail ou senha inválidos.");
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) setError(authErrorMessage(error.message));
     }
     setBusy(false);
   };
@@ -249,6 +269,15 @@ function Index() {
   const [retroNote, setRetroNote] = useState("");
   const [retroError, setRetroError] = useState<string | null>(null);
 
+  // Período escolhido pelo usuário para o relatório.
+  const initialRange = monthRange(
+    `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`,
+  );
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportStart, setExportStart] = useState(initialRange.start);
+  const [exportEnd, setExportEnd] = useState(initialRange.end);
+  const [exportError, setExportError] = useState<string | null>(null);
+
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -256,11 +285,25 @@ function Index() {
 
   /* ---------------------------- Sessão ---------------------------- */
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthReady(true);
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+        setSession(nextSession);
+      } else if (event === "SIGNED_OUT") {
+        setSession(null);
+        setRecords([]);
+      }
     });
+    void (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        setSession(null);
+        setAuthReady(true);
+        return;
+      }
+      const { data: userData, error } = await supabase.auth.getUser();
+      setSession(!error && userData.user ? sessionData.session : null);
+      setAuthReady(true);
+    })();
     setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => {
@@ -318,6 +361,7 @@ function Index() {
       const note = pendingNote.trim();
       setPendingNote("");
       await supabase.from("punch_records").insert({
+        user_id: session?.user.id,
         punched_at: at,
         type,
         note: note.length > 0 ? note.slice(0, 500) : null,
@@ -325,7 +369,7 @@ function Index() {
       });
       await fetchRecords();
     },
-    [pendingPunch, pendingNote, fetchRecords],
+    [pendingPunch, pendingNote, fetchRecords, session?.user.id],
   );
 
   // Ponto retroativo: usuário informa data, hora, período e observação
@@ -344,6 +388,7 @@ function Index() {
     }
     const note = retroNote.trim();
     await supabase.from("punch_records").insert({
+      user_id: session?.user.id,
       punched_at: when.toISOString(),
       type: retroType,
       note: note.length > 0 ? note.slice(0, 500) : null,
@@ -354,7 +399,7 @@ function Index() {
     // mostra o mês do registro criado
     setMonth(`${y}-${String(m).padStart(2, "0")}`);
     await fetchRecords();
-  }, [retroDate, retroTime, retroType, retroNote, fetchRecords]);
+  }, [retroDate, retroTime, retroType, retroNote, fetchRecords, session?.user.id]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -365,8 +410,11 @@ function Index() {
   );
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    setRecords([]);
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (!error) {
+      setSession(null);
+      setRecords([]);
+    }
   }, []);
 
   /* ------------------- Agrupamentos e totais ------------------- */
@@ -408,61 +456,102 @@ function Index() {
   };
 
   /* ================== Geração do PDF (jsPDF + autotable) ================== */
+  const openExport = useCallback(() => {
+    const range = monthRange(month);
+    setExportStart(range.start);
+    setExportEnd(range.end);
+    setExportError(null);
+    setExportOpen(true);
+  }, [month]);
+
   const exportPdf = useCallback(() => {
-    const doc = new jsPDF();
-    const [y, m] = month.split("-").map(Number) as [number, number];
-    const monthName = new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
-      month: "long",
-      year: "numeric",
-    });
+    setExportError(null);
+    if (!exportStart || !exportEnd) {
+      setExportError("Informe a data inicial e a data final.");
+      return;
+    }
+    if (exportStart > exportEnd) {
+      setExportError("A data inicial deve ser anterior à data final.");
+      return;
+    }
+
+    const byDay = new Map<string, PunchRecord[]>();
+    for (const record of records) {
+      const key = fmtDayKey(record.timestamp);
+      if (key < exportStart || key > exportEnd) continue;
+      if (!byDay.has(key)) byDay.set(key, []);
+      byDay.get(key)?.push(record);
+    }
+    const exportDays = [...byDay.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dayKey, dayRecords]) => {
+        const sorted = dayRecords.sort((a, b) => a.timestamp - b.timestamp);
+        return { dayKey, records: sorted, minutes: minutesWorked(sorted) };
+      });
+    if (exportDays.length === 0) {
+      setExportError("Não há registros no período escolhido.");
+      return;
+    }
+
+    const doc = new jsPDF({ orientation: "landscape" });
+    const periodMinutes = exportDays.reduce((sum, day) => sum + day.minutes, 0);
 
     doc.setFontSize(18);
     doc.text("PontoFácil — Relatório de Ponto", 14, 20);
     doc.setFontSize(11);
-    doc.text(`Mês de referência: ${monthName}`, 14, 28);
+    doc.text(`Período: ${fmtDate(exportStart)} a ${fmtDate(exportEnd)}`, 14, 28);
     doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, 14, 34);
 
-    // Uma linha por registro (Data | Tipo | Hora | Observação) + subtotal por dia
-    const body: string[][] = [];
-    const daysAsc = [...groupedDays].sort((a, b) => a.dayKey.localeCompare(b.dayKey));
-    for (const day of daysAsc) {
-      for (const r of day.records) {
-        body.push([
-          new Date(r.timestamp).toLocaleDateString("pt-BR"),
-          TYPE_META[r.type].label + (r.retroactive ? " (retroativo)" : ""),
-          fmtTime(r.timestamp),
-          r.note ?? "",
-          "",
-        ]);
-      }
-      body.push(["", `Total do dia (${fmtDayLabel(day.dayKey)})`, "", "", toHHMM(day.minutes)]);
-    }
+    // Uma linha por dia, com cada período em sua própria coluna.
+    const body = exportDays.map((day) => {
+      const times = (type: PunchType) => day.records
+        .filter((record) => record.type === type)
+        .map((record) => `${fmtTime(record.timestamp).slice(0, 5)}${record.retroactive ? "*" : ""}`)
+        .join(" / ") || "—";
+      const notes = day.records
+        .filter((record) => record.note)
+        .map((record) => `${TYPE_META[record.type].label}: ${record.note}`)
+        .join("; ");
+      return [
+        fmtDate(day.dayKey),
+        times("entrada"),
+        times("saida_almoco"),
+        times("retorno_almoco"),
+        times("saida"),
+        toHHMM(day.minutes),
+        notes || "—",
+      ];
+    });
 
     autoTable(doc, {
       startY: 40,
-      head: [["Data", "Tipo", "Hora", "Observação", "Total dia"]],
+      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Total", "Observações"]],
       body,
-      styles: { fontSize: 9 },
+      styles: { fontSize: 8, cellPadding: 2.5, overflow: "linebreak" },
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
-      didParseCell: (data) => {
-        if (
-          data.section === "body" &&
-          String((data.row.raw as string[])[1]).startsWith("Total do dia")
-        ) {
-          data.cell.styles.fontStyle = "bold";
-          data.cell.styles.fillColor = [255, 210, 63];
-        }
+      alternateRowStyles: { fillColor: [245, 242, 231] },
+      columnStyles: {
+        0: { cellWidth: 24 },
+        1: { cellWidth: 28 },
+        2: { cellWidth: 31 },
+        3: { cellWidth: 34 },
+        4: { cellWidth: 28 },
+        5: { cellWidth: 22, fontStyle: "bold" },
+        6: { cellWidth: 90 },
       },
     });
 
     const finalY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable
       .finalY;
     doc.setFontSize(13);
-    doc.text(`Total do mês: ${toHHMM(monthMinutes)} (HH:MM)`, 14, finalY + 12);
-    doc.text(`Equivalente decimal: ${toDecimal(monthMinutes)} horas`, 14, finalY + 20);
+    doc.text(`Total do período: ${toHHMM(periodMinutes)} (HH:MM)`, 14, finalY + 12);
+    doc.text(`Equivalente decimal: ${toDecimal(periodMinutes)} horas`, 14, finalY + 20);
+    doc.setFontSize(8);
+    doc.text("* registro retroativo", 270, finalY + 12, { align: "right" });
 
-    doc.save(`relatorio-ponto-${month}.pdf`);
-  }, [groupedDays, month, monthMinutes]);
+    doc.save(`relatorio-ponto-${exportStart}-a-${exportEnd}.pdf`);
+    setExportOpen(false);
+  }, [exportEnd, exportStart, records]);
 
   /* --------------------------- Render --------------------------- */
 
