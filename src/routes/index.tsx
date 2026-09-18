@@ -407,12 +407,19 @@ function Index() {
     await fetchRecords();
   }, [retroDate, retroTime, retroType, retroNote, fetchRecords, session?.user.id]);
 
+  // Exclui um registro: remove da tela de imediato e, se o banco falhar,
+  // recarrega os registros e avisa o usuário.
   const handleDelete = useCallback(
     async (id: string) => {
+      setDeleteTarget(null);
       setRecords((prev) => prev.filter((r) => r.id !== id));
-      await supabase.from("punch_records").delete().eq("id", id);
+      const { error } = await supabase.from("punch_records").delete().eq("id", id);
+      if (error) {
+        setPunchError("Não foi possível excluir o registro. Tente novamente.");
+        await fetchRecords();
+      }
     },
-    [],
+    [fetchRecords],
   );
 
   const signOut = useCallback(async () => {
