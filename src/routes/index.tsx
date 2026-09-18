@@ -418,7 +418,7 @@ function Index() {
       setRecords((prev) => prev.filter((r) => r.id !== id));
       const { error } = await supabase.from("punch_records").delete().eq("id", id);
       if (error) {
-        setPunchError("Não foi possível excluir o registro. Tente novamente.");
+        setActionError("Não foi possível excluir o registro. Tente novamente.");
         await fetchRecords();
       }
     },
