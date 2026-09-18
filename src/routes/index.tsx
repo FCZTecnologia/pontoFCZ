@@ -764,10 +764,10 @@ function Index() {
                               {fmtTime(record.timestamp).slice(0, 5)}
                               {record.retroactive && <span title="Retroativo">*</span>}
                               <button
-                                onClick={() => handleDelete(record.id)}
+                                onClick={() => setDeleteTarget(record)}
                                 aria-label={`Excluir ${TYPE_META[type].label} de ${fmtDate(day.dayKey)}`}
                                 title="Excluir registro"
-                                className="ml-0.5 cursor-pointer font-bold opacity-50 hover:opacity-100"
+                                className="ml-0.5 grid h-4 w-4 cursor-pointer place-items-center rounded-full border border-ink bg-coral text-[10px] font-black text-ink transition hover:scale-110"
                               >
                                 ×
                               </button>
