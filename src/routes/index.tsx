@@ -724,6 +724,12 @@ function Index() {
           </button>
         </div>
 
+        {actionError && (
+          <p className="mb-4 rounded-2xl border-2 border-ink bg-coral/20 px-4 py-2 text-sm font-bold">
+            {actionError}
+          </p>
+        )}
+
         {loading ? (
           <div className="rounded-3xl border-2 border-dashed border-ink/30 p-10 text-center">
             <p className="text-lg font-bold">Carregando registros…</p>
@@ -815,6 +821,27 @@ function Index() {
               ⬇ Gerar PDF
             </button>
             <button onClick={() => setExportOpen(false)} className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 hover:border-ink hover:text-ink">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: confirmação de exclusão de registro */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" onClick={() => setDeleteTarget(null)}>
+          <div className="w-full max-w-sm rounded-3xl border-2 border-ink bg-paper p-6 text-center shadow-punch-lg" onClick={(event) => event.stopPropagation()}>
+            <div className="text-4xl">🗑️</div>
+            <h2 className="mt-2 text-2xl font-bold">Excluir registro?</h2>
+            <p className="mt-2 text-sm font-medium text-ink/60">
+              {TYPE_META[deleteTarget.type].emoji} {TYPE_META[deleteTarget.type].label} às{" "}
+              <span className="font-mono font-bold text-ink">{fmtTime(deleteTarget.timestamp).slice(0, 5)}</span>{" "}
+              de <span className="font-mono font-bold text-ink">{fmtDate(fmtDayKey(deleteTarget.timestamp))}</span> será apagado para sempre.
+            </p>
+            <button onClick={() => handleDelete(deleteTarget.id)} className="mt-5 w-full cursor-pointer rounded-2xl border-2 border-ink bg-coral py-3 text-lg font-bold shadow-punch transition active:translate-x-1 active:translate-y-1">
+              Sim, excluir
+            </button>
+            <button onClick={() => setDeleteTarget(null)} className="mt-3 w-full cursor-pointer rounded-full border-2 border-ink/20 py-2 text-sm font-bold text-ink/50 hover:border-ink hover:text-ink">
               Cancelar
             </button>
           </div>
