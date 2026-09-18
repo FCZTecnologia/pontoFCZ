@@ -543,7 +543,7 @@ function Index() {
         3: { cellWidth: 34 },
         4: { cellWidth: 28 },
         5: { cellWidth: 22, fontStyle: "bold" },
-        6: { cellWidth: 90 },
+        6: { cellWidth: 78 },
       },
     });
 
