@@ -268,6 +268,9 @@ function Index() {
   const [retroType, setRetroType] = useState<PunchType>("entrada");
   const [retroNote, setRetroNote] = useState("");
   const [retroError, setRetroError] = useState<string | null>(null);
+  // exclusão: registro aguardando confirmação + erro de ação
+  const [deleteTarget, setDeleteTarget] = useState<PunchRecord | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Período escolhido pelo usuário para o relatório.
   const initialRange = monthRange(
