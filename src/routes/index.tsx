@@ -176,7 +176,7 @@ function AuthScreen() {
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: window.location.origin },
+        options: { emailRedirectTo: authRedirectUrl() },
       });
       if (error) setError(authErrorMessage(error.message));
       else if (!data.session) setMsg("Confira seu e-mail para confirmar a conta.");
@@ -190,7 +190,7 @@ function AuthScreen() {
   const google = async () => {
     setError(null);
     const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
+      redirect_uri: authRedirectUrl(),
     });
     if (result.error) setError("Não foi possível entrar com o Google.");
   };
