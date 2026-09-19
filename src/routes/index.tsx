@@ -130,6 +130,25 @@ function authErrorMessage(message: string): string {
   return "Não foi possível acessar sua conta agora. Tente novamente.";
 }
 
+// URL pública usada nos retornos de autenticação (e-mail e Google).
+// Em produção (Vercel + domínio próprio) defina VITE_PUBLIC_SITE_URL,
+// ex.: https://ponto.fcztecnologia.com.br. Sem ela, usa o endereço atual,
+// o que mantém a prévia da Lovable funcionando.
+function authRedirectUrl(): string {
+  const configured = import.meta.env["VITE_PUBLIC_SITE_URL"] as string | undefined;
+  if (configured && typeof window !== "undefined") {
+    const host = window.location.hostname;
+    // Só força o domínio configurado fora de ambientes de prévia/local.
+    const isPreview =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host.endsWith(".lovable.app") ||
+      host.endsWith(".lovableproject.com");
+    if (!isPreview) return configured.replace(/\/$/, "");
+  }
+  return window.location.origin;
+}
+
 // valores iniciais para os campos do formulário retroativo
 function todayInputValue(): string {
   const d = new Date();
