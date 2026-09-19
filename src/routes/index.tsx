@@ -525,7 +525,7 @@ function Index() {
     const body = exportDays.map((day) => {
       const times = (type: PunchType) => day.records
         .filter((record) => record.type === type)
-        .map((record) => `${fmtTime(record.timestamp).slice(0, 5)}${record.retroactive ? "*" : ""}`)
+        .map((record) => fmtTime(record.timestamp).slice(0, 5))
         .join(" / ") || "—";
       const notes = day.records
         .filter((record) => record.note)
@@ -537,6 +537,8 @@ function Index() {
         times("saida_almoco"),
         times("retorno_almoco"),
         times("saida"),
+        times("hora_extra_inicio"),
+        times("hora_extra_fim"),
         toHHMM(day.minutes),
         notes || "—",
       ];
@@ -544,19 +546,21 @@ function Index() {
 
     autoTable(doc, {
       startY: 40,
-      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Total", "Observações"]],
+      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Hora extra início", "Hora extra fim", "Total", "Observações"]],
       body,
       styles: { fontSize: 8, cellPadding: 2.5, overflow: "linebreak" },
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
       alternateRowStyles: { fillColor: [245, 242, 231] },
       columnStyles: {
-        0: { cellWidth: 24 },
-        1: { cellWidth: 28 },
-        2: { cellWidth: 31 },
-        3: { cellWidth: 34 },
-        4: { cellWidth: 28 },
-        5: { cellWidth: 22, fontStyle: "bold" },
-        6: { cellWidth: 78 },
+        0: { cellWidth: 22 },
+        1: { cellWidth: 26 },
+        2: { cellWidth: 28 },
+        3: { cellWidth: 30 },
+        4: { cellWidth: 26 },
+        5: { cellWidth: 26 },
+        6: { cellWidth: 26 },
+        7: { cellWidth: 20, fontStyle: "bold" },
+        8: { cellWidth: 65 },
       },
     });
 
@@ -565,8 +569,6 @@ function Index() {
     doc.setFontSize(13);
     doc.text(`Total do período: ${toHHMM(periodMinutes)} (HH:MM)`, 14, finalY + 12);
     doc.text(`Equivalente decimal: ${toDecimal(periodMinutes)} horas`, 14, finalY + 20);
-    doc.setFontSize(8);
-    doc.text("* registro retroativo", 270, finalY + 12, { align: "right" });
 
     doc.save(`relatorio-ponto-${exportStart}-a-${exportEnd}.pdf`);
     setExportOpen(false);
@@ -746,7 +748,7 @@ function Index() {
           </div>
         ) : (
           <div className="overflow-x-auto rounded-3xl border-2 border-ink shadow-punch">
-            <table className="w-full min-w-[880px] border-collapse text-left">
+            <table className="w-full min-w-[1060px] border-collapse text-left">
               <thead className="bg-ink text-[11px] font-bold uppercase tracking-[0.12em] text-lemon">
                 <tr>
                   <th className="px-4 py-3">Data</th>
