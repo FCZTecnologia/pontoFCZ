@@ -30,7 +30,7 @@ export const Route = createFileRoute("/")({
 
 /* ============================ Tipos ============================ */
 
-type PunchType = "entrada" | "saida_almoco" | "retorno_almoco" | "saida";
+type PunchType = "entrada" | "saida_almoco" | "retorno_almoco" | "saida" | "hora_extra_inicio" | "hora_extra_fim";
 
 interface PunchRecord {
   id: string;
@@ -48,12 +48,15 @@ const TYPE_META: Record<
   saida_almoco: { label: "Saída Almoço", emoji: "🥗", dot: "bg-lemon", chip: "bg-lemon text-ink" },
   retorno_almoco: { label: "Retorno Almoço", emoji: "🔁", dot: "bg-sky", chip: "bg-mint text-ink" },
   saida: { label: "Saída", emoji: "👋", dot: "bg-coral", chip: "bg-coral text-paper" },
+  hora_extra_inicio: { label: "Hora Extra Início", emoji: "⏰", dot: "bg-lilac", chip: "bg-lilac text-ink" },
+  hora_extra_fim: { label: "Hora Extra Fim", emoji: "🏁", dot: "bg-lilac", chip: "bg-ink text-lemon" },
 };
 
 /* ====================== Lógica de cálculo de horas ====================== */
 /*
- * Relógio "ligado" em Entrada/Retorno Almoço e "desligado" em
- * Saída Almoço/Saída — somamos apenas o tempo ligado.
+ * Relógio "ligado" em Entrada/Retorno Almoço/Hora Extra Início e
+ * "desligado" em Saída Almoço/Saída/Hora Extra Fim — somamos apenas
+ * o tempo ligado, então a hora extra entra no total do dia.
  */
 function minutesWorked(records: PunchRecord[]): number {
   const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
@@ -61,7 +64,7 @@ function minutesWorked(records: PunchRecord[]): number {
   let clockOn: number | null = null;
 
   for (const r of sorted) {
-    if (r.type === "entrada" || r.type === "retorno_almoco") {
+    if (r.type === "entrada" || r.type === "retorno_almoco" || r.type === "hora_extra_inicio") {
       if (clockOn === null) clockOn = r.timestamp;
     } else if (clockOn !== null) {
       total += (r.timestamp - clockOn) / 60000;
@@ -522,7 +525,7 @@ function Index() {
     const body = exportDays.map((day) => {
       const times = (type: PunchType) => day.records
         .filter((record) => record.type === type)
-        .map((record) => `${fmtTime(record.timestamp).slice(0, 5)}${record.retroactive ? "*" : ""}`)
+        .map((record) => fmtTime(record.timestamp).slice(0, 5))
         .join(" / ") || "—";
       const notes = day.records
         .filter((record) => record.note)
@@ -534,6 +537,8 @@ function Index() {
         times("saida_almoco"),
         times("retorno_almoco"),
         times("saida"),
+        times("hora_extra_inicio"),
+        times("hora_extra_fim"),
         toHHMM(day.minutes),
         notes || "—",
       ];
@@ -541,19 +546,21 @@ function Index() {
 
     autoTable(doc, {
       startY: 40,
-      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Total", "Observações"]],
+      head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Hora extra início", "Hora extra fim", "Total", "Observações"]],
       body,
       styles: { fontSize: 8, cellPadding: 2.5, overflow: "linebreak" },
       headStyles: { fillColor: [23, 21, 31], textColor: [255, 210, 63] },
       alternateRowStyles: { fillColor: [245, 242, 231] },
       columnStyles: {
-        0: { cellWidth: 24 },
-        1: { cellWidth: 28 },
-        2: { cellWidth: 31 },
-        3: { cellWidth: 34 },
-        4: { cellWidth: 28 },
-        5: { cellWidth: 22, fontStyle: "bold" },
-        6: { cellWidth: 78 },
+        0: { cellWidth: 22 },
+        1: { cellWidth: 26 },
+        2: { cellWidth: 28 },
+        3: { cellWidth: 30 },
+        4: { cellWidth: 26 },
+        5: { cellWidth: 26 },
+        6: { cellWidth: 26 },
+        7: { cellWidth: 20, fontStyle: "bold" },
+        8: { cellWidth: 65 },
       },
     });
 
@@ -562,8 +569,6 @@ function Index() {
     doc.setFontSize(13);
     doc.text(`Total do período: ${toHHMM(periodMinutes)} (HH:MM)`, 14, finalY + 12);
     doc.text(`Equivalente decimal: ${toDecimal(periodMinutes)} horas`, 14, finalY + 20);
-    doc.setFontSize(8);
-    doc.text("* registro retroativo", 270, finalY + 12, { align: "right" });
 
     doc.save(`relatorio-ponto-${exportStart}-a-${exportEnd}.pdf`);
     setExportOpen(false);
@@ -743,7 +748,7 @@ function Index() {
           </div>
         ) : (
           <div className="overflow-x-auto rounded-3xl border-2 border-ink shadow-punch">
-            <table className="w-full min-w-[880px] border-collapse text-left">
+            <table className="w-full min-w-[1060px] border-collapse text-left">
               <thead className="bg-ink text-[11px] font-bold uppercase tracking-[0.12em] text-lemon">
                 <tr>
                   <th className="px-4 py-3">Data</th>
@@ -751,6 +756,8 @@ function Index() {
                   <th className="px-3 py-3">Saída almoço</th>
                   <th className="px-3 py-3">Retorno almoço</th>
                   <th className="px-3 py-3">Saída</th>
+                  <th className="px-3 py-3">Hora extra início</th>
+                  <th className="px-3 py-3">Hora extra fim</th>
                   <th className="px-3 py-3">Total</th>
                   <th className="px-4 py-3">Observações</th>
                 </tr>
@@ -762,7 +769,7 @@ function Index() {
                       <span className="block font-mono font-bold">{fmtDate(day.dayKey)}</span>
                       <span className="text-xs font-semibold capitalize text-ink/50">{fmtDayLabel(day.dayKey).split(" · ")[0]}</span>
                     </td>
-                    {(["entrada", "saida_almoco", "retorno_almoco", "saida"] as PunchType[]).map((type) => (
+                    {(["entrada", "saida_almoco", "retorno_almoco", "saida", "hora_extra_inicio", "hora_extra_fim"] as PunchType[]).map((type) => (
                       <td key={type} className="px-3 py-4 align-top">
                         <div className="flex flex-col gap-1.5">
                           {day.records.filter((record) => record.type === type).map((record) => (

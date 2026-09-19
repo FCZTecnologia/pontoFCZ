@@ -1,0 +1,1 @@
+ALTER TABLE public.punch_records DROP CONSTRAINT IF EXISTS punch_records_type_check; ALTER TABLE public.punch_records ADD CONSTRAINT punch_records_type_check CHECK (type IN ('entrada','saida_almoco','retorno_almoco','saida','hora_extra_inicio','hora_extra_fim'));
