@@ -30,7 +30,7 @@ export const Route = createFileRoute("/")({
 
 /* ============================ Tipos ============================ */
 
-type PunchType = "entrada" | "saida_almoco" | "retorno_almoco" | "saida";
+type PunchType = "entrada" | "saida_almoco" | "retorno_almoco" | "saida" | "hora_extra_inicio" | "hora_extra_fim";
 
 interface PunchRecord {
   id: string;
@@ -48,12 +48,15 @@ const TYPE_META: Record<
   saida_almoco: { label: "Saída Almoço", emoji: "🥗", dot: "bg-lemon", chip: "bg-lemon text-ink" },
   retorno_almoco: { label: "Retorno Almoço", emoji: "🔁", dot: "bg-sky", chip: "bg-mint text-ink" },
   saida: { label: "Saída", emoji: "👋", dot: "bg-coral", chip: "bg-coral text-paper" },
+  hora_extra_inicio: { label: "Hora Extra Início", emoji: "⏰", dot: "bg-lilac", chip: "bg-lilac text-ink" },
+  hora_extra_fim: { label: "Hora Extra Fim", emoji: "🏁", dot: "bg-lilac", chip: "bg-ink text-lemon" },
 };
 
 /* ====================== Lógica de cálculo de horas ====================== */
 /*
- * Relógio "ligado" em Entrada/Retorno Almoço e "desligado" em
- * Saída Almoço/Saída — somamos apenas o tempo ligado.
+ * Relógio "ligado" em Entrada/Retorno Almoço/Hora Extra Início e
+ * "desligado" em Saída Almoço/Saída/Hora Extra Fim — somamos apenas
+ * o tempo ligado, então a hora extra entra no total do dia.
  */
 function minutesWorked(records: PunchRecord[]): number {
   const sorted = [...records].sort((a, b) => a.timestamp - b.timestamp);
@@ -61,7 +64,7 @@ function minutesWorked(records: PunchRecord[]): number {
   let clockOn: number | null = null;
 
   for (const r of sorted) {
-    if (r.type === "entrada" || r.type === "retorno_almoco") {
+    if (r.type === "entrada" || r.type === "retorno_almoco" || r.type === "hora_extra_inicio") {
       if (clockOn === null) clockOn = r.timestamp;
     } else if (clockOn !== null) {
       total += (r.timestamp - clockOn) / 60000;
@@ -751,6 +754,8 @@ function Index() {
                   <th className="px-3 py-3">Saída almoço</th>
                   <th className="px-3 py-3">Retorno almoço</th>
                   <th className="px-3 py-3">Saída</th>
+                  <th className="px-3 py-3">Hora extra início</th>
+                  <th className="px-3 py-3">Hora extra fim</th>
                   <th className="px-3 py-3">Total</th>
                   <th className="px-4 py-3">Observações</th>
                 </tr>
@@ -762,7 +767,7 @@ function Index() {
                       <span className="block font-mono font-bold">{fmtDate(day.dayKey)}</span>
                       <span className="text-xs font-semibold capitalize text-ink/50">{fmtDayLabel(day.dayKey).split(" · ")[0]}</span>
                     </td>
-                    {(["entrada", "saida_almoco", "retorno_almoco", "saida"] as PunchType[]).map((type) => (
+                    {(["entrada", "saida_almoco", "retorno_almoco", "saida", "hora_extra_inicio", "hora_extra_fim"] as PunchType[]).map((type) => (
                       <td key={type} className="px-3 py-4 align-top">
                         <div className="flex flex-col gap-1.5">
                           {day.records.filter((record) => record.type === type).map((record) => (
