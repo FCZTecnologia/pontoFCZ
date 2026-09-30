@@ -301,6 +301,7 @@ function Index() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStart, setExportStart] = useState(initialRange.start);
   const [exportEnd, setExportEnd] = useState(initialRange.end);
+  const [exportName, setExportName] = useState("");
   const [exportError, setExportError] = useState<string | null>(null);
 
   const [month, setMonth] = useState(() => {
@@ -498,6 +499,12 @@ function Index() {
     const range = monthRange(month);
     setExportStart(range.start);
     setExportEnd(range.end);
+    // lembra o último nome usado no relatório (guardado só no navegador)
+    try {
+      setExportName(localStorage.getItem("pontofacil:export-name") ?? "");
+    } catch {
+      setExportName("");
+    }
     setExportError(null);
     setExportOpen(true);
   }, [month]);
@@ -511,6 +518,16 @@ function Index() {
     if (exportStart > exportEnd) {
       setExportError("A data inicial deve ser anterior à data final.");
       return;
+    }
+    const personName = exportName.trim();
+    if (!personName) {
+      setExportError("Informe o nome da pessoa para o relatório.");
+      return;
+    }
+    try {
+      localStorage.setItem("pontofacil:export-name", personName);
+    } catch {
+      /* storage indisponível — segue sem lembrar o nome */
     }
 
     const byDay = new Map<string, PunchRecord[]>();
@@ -534,11 +551,15 @@ function Index() {
     const doc = new jsPDF({ orientation: "landscape" });
     const periodMinutes = exportDays.reduce((sum, day) => sum + day.minutes, 0);
 
+    // Metadados do arquivo: o nome vai no título do PDF
+    doc.setProperties({ title: `Relatório de Ponto — ${personName}` });
+
     doc.setFontSize(18);
     doc.text("PontoFácil — Relatório de Ponto", 14, 20);
     doc.setFontSize(11);
-    doc.text(`Período: ${fmtDate(exportStart)} a ${fmtDate(exportEnd)}`, 14, 28);
-    doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, 14, 34);
+    doc.text(`Nome: ${personName}`, 14, 28);
+    doc.text(`Período: ${fmtDate(exportStart)} a ${fmtDate(exportEnd)}`, 14, 34);
+    doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, 14, 40);
 
     // Uma linha por dia, com cada período em sua própria coluna.
     const body = exportDays.map((day) => {
@@ -564,7 +585,7 @@ function Index() {
     });
 
     autoTable(doc, {
-      startY: 40,
+      startY: 46,
       head: [["Data", "Entrada", "Saída almoço", "Retorno almoço", "Saída", "Hora extra início", "Hora extra fim", "Total", "Observações"]],
       body,
       styles: { fontSize: 8, cellPadding: 2.5, overflow: "linebreak" },
@@ -591,7 +612,7 @@ function Index() {
 
     doc.save(`relatorio-ponto-${exportStart}-a-${exportEnd}.pdf`);
     setExportOpen(false);
-  }, [exportEnd, exportStart, records]);
+  }, [exportEnd, exportStart, exportName, records]);
 
   /* --------------------------- Render --------------------------- */
 
@@ -831,8 +852,19 @@ function Index() {
         <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" onClick={() => setExportOpen(false)}>
           <div className="w-full max-w-lg rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch-lg" onClick={(event) => event.stopPropagation()}>
             <h2 className="text-2xl font-bold">Exportar relatório</h2>
-            <p className="mt-1 text-sm font-medium text-ink/50">Escolha o período que deseja incluir no PDF.</p>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <p className="mt-1 text-sm font-medium text-ink/50">Informe o nome e o período que deseja incluir no PDF.</p>
+            <label className="mt-5 block text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+              Nome da pessoa
+              <input
+                type="text"
+                value={exportName}
+                onChange={(event) => setExportName(event.target.value)}
+                maxLength={80}
+                placeholder="Ex.: Maria Silva"
+                className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 text-sm font-medium outline-none focus:shadow-punch-sm"
+              />
+            </label>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <label className="text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
                 Data inicial
                 <input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} className="mt-1 block w-full rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-sm outline-none focus:shadow-punch-sm" />
