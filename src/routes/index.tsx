@@ -301,6 +301,7 @@ function Index() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStart, setExportStart] = useState(initialRange.start);
   const [exportEnd, setExportEnd] = useState(initialRange.end);
+  const [exportName, setExportName] = useState("");
   const [exportError, setExportError] = useState<string | null>(null);
 
   const [month, setMonth] = useState(() => {
@@ -498,6 +499,12 @@ function Index() {
     const range = monthRange(month);
     setExportStart(range.start);
     setExportEnd(range.end);
+    // lembra o último nome usado no relatório (guardado só no navegador)
+    try {
+      setExportName(localStorage.getItem("pontofacil:export-name") ?? "");
+    } catch {
+      setExportName("");
+    }
     setExportError(null);
     setExportOpen(true);
   }, [month]);
@@ -511,6 +518,16 @@ function Index() {
     if (exportStart > exportEnd) {
       setExportError("A data inicial deve ser anterior à data final.");
       return;
+    }
+    const personName = exportName.trim();
+    if (!personName) {
+      setExportError("Informe o nome da pessoa para o relatório.");
+      return;
+    }
+    try {
+      localStorage.setItem("pontofacil:export-name", personName);
+    } catch {
+      /* storage indisponível — segue sem lembrar o nome */
     }
 
     const byDay = new Map<string, PunchRecord[]>();
