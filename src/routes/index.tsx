@@ -304,6 +304,21 @@ function Index() {
   const [exportName, setExportName] = useState("");
   const [exportError, setExportError] = useState<string | null>(null);
 
+  // Aba ativa e valor/hora (salvo no navegador, por conta)
+  const [tab, setTab] = useState<"registros" | "financeiro">("registros");
+  const [hourlyRate, setHourlyRate] = useState("");
+  const rateKey = `pontofacil:hourly-rate:${session?.user.id ?? "anon"}`;
+  useEffect(() => {
+    if (!session) return;
+    setHourlyRate(localStorage.getItem(rateKey) ?? "");
+  }, [rateKey, session]);
+  const updateRate = (value: string) => {
+    setHourlyRate(value);
+    localStorage.setItem(rateKey, value);
+  };
+  const rateNumber = Math.max(0, Number(hourlyRate.replace(",", ".")) || 0);
+  const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -756,8 +771,24 @@ function Index() {
         </div>
       </section>
 
-      {/* Tabela de registros */}
-      <section className="mx-auto max-w-5xl px-5 pt-10 pb-16 sm:px-8">
+      {/* Abas: Registros | Financeiro */}
+      <div className="mx-auto flex max-w-5xl gap-2 px-5 pt-10 sm:px-8" role="tablist">
+        {([["registros", "📋 Registros"], ["financeiro", "💰 Financeiro"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`cursor-pointer rounded-full border-2 border-ink px-5 py-2 text-sm font-bold shadow-punch-sm transition active:translate-x-0.5 active:translate-y-0.5 ${tab === key ? "bg-ink text-lemon" : "bg-paper"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "registros" ? (
+      /* Tabela de registros */
+      <section className="mx-auto max-w-5xl px-5 pt-6 pb-16 sm:px-8">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-2xl font-bold">Registros do mês</h2>
           <button
@@ -846,6 +877,81 @@ function Index() {
           registros salvos com segurança na sua conta
         </p>
       </section>
+      ) : (
+        /* Aba Financeira: valor/hora × horas trabalhadas (decimal) de cada dia */
+        <section className="mx-auto max-w-5xl px-5 pt-6 pb-16 sm:px-8">
+          <div className="rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch">
+            <label className="block text-xs font-bold uppercase tracking-[0.12em] text-ink/60">
+              Valor pago por hora (R$)
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={hourlyRate}
+                onChange={(event) => updateRate(event.target.value)}
+                placeholder="Ex.: 25,00"
+                className="mt-2 block w-full max-w-xs rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-lg font-bold normal-case tracking-normal focus:outline-none focus:ring-4 focus:ring-lemon"
+              />
+            </label>
+            <p className="mt-2 text-xs font-medium text-ink/50">O valor fica salvo neste navegador para a sua conta.</p>
+          </div>
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-2">
+            <div className="rounded-3xl bg-mint p-6 text-ink shadow-punch">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-ink/60">valor do mês</p>
+              <p className="mt-2 font-mono text-4xl font-bold">{brl((monthMinutes / 60) * rateNumber)}</p>
+              <p className="text-sm text-ink/60">{toDecimal(monthMinutes)} h × {brl(rateNumber)}</p>
+            </div>
+            <div className="rounded-3xl border-2 border-ink bg-paper p-6 shadow-punch">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-ink/40">média por dia</p>
+              <p className="mt-2 font-mono text-4xl font-bold">
+                {brl(groupedDays.length ? ((monthMinutes / 60) * rateNumber) / groupedDays.length : 0)}
+              </p>
+              <p className="text-sm text-ink/50">{groupedDays.length} dias com registro</p>
+            </div>
+          </div>
+
+          {groupedDays.length === 0 ? (
+            <div className="mt-6 rounded-3xl border-2 border-dashed border-ink/30 p-10 text-center">
+              <p className="text-lg font-bold">Nenhum registro neste mês</p>
+            </div>
+          ) : (
+            <div className="mt-6 overflow-x-auto rounded-3xl border-2 border-ink shadow-punch">
+              <table className="w-full min-w-[480px] border-collapse text-left">
+                <thead className="bg-ink text-[11px] font-bold uppercase tracking-[0.12em] text-lemon">
+                  <tr>
+                    <th className="px-4 py-3">Data</th>
+                    <th className="px-3 py-3">Horas (HH:MM)</th>
+                    <th className="px-3 py-3">Horas (decimal)</th>
+                    <th className="px-4 py-3 text-right">Valor do dia</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedDays.map((day, i) => (
+                    <tr key={day.dayKey} className={`border-t-2 border-ink ${i % 2 === 0 ? "bg-lemon/20" : "bg-mint/15"}`}>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <span className="block font-mono font-bold">{fmtDate(day.dayKey)}</span>
+                        <span className="text-xs font-semibold capitalize text-ink/50">{fmtDayLabel(day.dayKey).split(" · ")[0]}</span>
+                      </td>
+                      <td className="px-3 py-3 font-mono font-bold">{toHHMM(day.minutes)}</td>
+                      <td className="px-3 py-3 font-mono">{toDecimal(day.minutes)}</td>
+                      <td className="px-4 py-3 text-right font-mono font-bold">{brl((day.minutes / 60) * rateNumber)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-ink bg-ink text-paper">
+                    <td className="px-4 py-3 font-bold">Total do mês</td>
+                    <td className="px-3 py-3 font-mono font-bold">{toHHMM(monthMinutes)}</td>
+                    <td className="px-3 py-3 font-mono">{toDecimal(monthMinutes)}</td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-lemon">{brl((monthMinutes / 60) * rateNumber)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
 
       {/* Modal: escolha do intervalo do relatório */}
       {exportOpen && (
