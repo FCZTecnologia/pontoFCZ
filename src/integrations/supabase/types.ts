@@ -44,6 +44,24 @@ export type Database = {
         }
         Relationships: []
       }
+      user_settings: {
+        Row: {
+          hourly_rate: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          hourly_rate?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Update: {
+          hourly_rate?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
