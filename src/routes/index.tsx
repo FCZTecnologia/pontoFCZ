@@ -304,17 +304,35 @@ function Index() {
   const [exportName, setExportName] = useState("");
   const [exportError, setExportError] = useState<string | null>(null);
 
-  // Aba ativa e valor/hora (salvo no navegador, por conta)
+  // Aba ativa e valor/hora (salvo no banco, uma linha por conta; RLS garante isolamento)
   const [tab, setTab] = useState<"registros" | "financeiro">("registros");
   const [hourlyRate, setHourlyRate] = useState("");
-  const rateKey = `pontofacil:hourly-rate:${session?.user.id ?? "anon"}`;
+  const [rateStatus, setRateStatus] = useState<string | null>(null);
+  const userId = session?.user.id;
   useEffect(() => {
-    if (!session) return;
-    setHourlyRate(localStorage.getItem(rateKey) ?? "");
-  }, [rateKey, session]);
+    if (!userId) return;
+    supabase
+      .from("user_settings")
+      .select("hourly_rate")
+      .eq("user_id", userId)
+      .maybeSingle()
+      .then(({ data }) => setHourlyRate(data ? String(data.hourly_rate) : ""));
+  }, [userId]);
+  // Salva com pequeno atraso para não gravar a cada tecla
+  useEffect(() => {
+    if (!userId || hourlyRate === "") return;
+    const value = Math.max(0, Number(hourlyRate.replace(",", ".")) || 0);
+    const t = setTimeout(async () => {
+      const { error } = await supabase
+        .from("user_settings")
+        .upsert({ user_id: userId, hourly_rate: value, updated_at: new Date().toISOString() });
+      setRateStatus(error ? "Não foi possível salvar o valor. Tente novamente." : "Valor salvo na sua conta.");
+    }, 600);
+    return () => clearTimeout(t);
+  }, [hourlyRate, userId]);
   const updateRate = (value: string) => {
+    setRateStatus(null);
     setHourlyRate(value);
-    localStorage.setItem(rateKey, value);
   };
   const rateNumber = Math.max(0, Number(hourlyRate.replace(",", ".")) || 0);
   const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
