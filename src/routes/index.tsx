@@ -912,7 +912,7 @@ function Index() {
                 className="mt-2 block w-full max-w-xs rounded-2xl border-2 border-ink bg-paper px-4 py-3 font-mono text-lg font-bold normal-case tracking-normal focus:outline-none focus:ring-4 focus:ring-lemon"
               />
             </label>
-            <p className="mt-2 text-xs font-medium text-ink/50">O valor fica salvo neste navegador para a sua conta.</p>
+            <p className="mt-2 text-xs font-medium text-ink/50">{rateStatus ?? "O valor fica salvo na sua conta e só você tem acesso."}</p>
           </div>
 
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
